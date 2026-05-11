@@ -3,6 +3,7 @@ import { z } from "zod";
 import { uodoGet, uodoFetchText } from "./api";
 import { formatSearchResults, formatDecision } from "./format";
 import type { UodoDocument, UodoSearchItem } from "./types";
+import { VERSION } from "./version";
 
 const txt = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
@@ -14,9 +15,11 @@ const err = (error: unknown) => {
   return { isError: true as const, content: [{ type: "text" as const, text }] };
 };
 
+const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 function buildCondition(query?: string, caseNumber?: string): string {
   if (caseNumber) {
-    const safe = caseNumber.trim().replace(/[/?#\s]/g, "");
+    const safe = caseNumber.trim().replace(/[^a-zA-Z0-9.\-\/]/g, "");
     return `refname:glob:*${safe}*`;
   }
   if (query) {
@@ -24,14 +27,14 @@ function buildCondition(query?: string, caseNumber?: string): string {
     if (terms.length === 1) {
       return `content_pl:fts:${encodeURIComponent(terms[0])}`;
     }
-    const pattern = terms.map((t) => t.replace(/\s+/g, "\\s+")).join("|");
+    const pattern = terms.map((t) => escapeRegex(t).replace(/\s+/g, "\\s+")).join("|");
     return `content_pl:regex:${encodeURIComponent(pattern)}`;
   }
   return "publicator_subtype:eq:uodo";
 }
 
 export function createMcpServer(outputDir?: string): McpServer {
-  const server = new McpServer({ name: "UODO-MCP", version: "1.0.0" });
+  const server = new McpServer({ name: "UODO-MCP", version: VERSION });
 
   server.tool(
     "uodo_search_decisions",

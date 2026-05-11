@@ -2,10 +2,11 @@ import { createServer as createHttpServer, IncomingMessage, ServerResponse } fro
 import { randomUUID } from "crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "./server";
+import { VERSION } from "./version";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const VERSION = "1.0.0";
+const MAX_SESSIONS = 100;
 
 const sessions = new Map<string, StreamableHTTPServerTransport>();
 
@@ -31,6 +32,12 @@ async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<voi
   if (req.method !== "POST") {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "New sessions must be initialized via POST" }));
+    return;
+  }
+
+  if (sessions.size >= MAX_SESSIONS) {
+    res.writeHead(503, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Too many active sessions" }));
     return;
   }
 

@@ -1,5 +1,6 @@
 const UODO_API = "https://orzeczenia.uodo.gov.pl/api";
 const CACHE_TTL_MS = 15 * 60 * 1000;
+const CACHE_MAX_SIZE = 200;
 
 interface CacheEntry {
   data: unknown;
@@ -19,6 +20,9 @@ function cacheGet(key: string): unknown | null {
 }
 
 function cacheSet(key: string, data: unknown): void {
+  if (cache.size >= CACHE_MAX_SIZE) {
+    cache.delete(cache.keys().next().value!);
+  }
   cache.set(key, { data, ts: Date.now() });
 }
 

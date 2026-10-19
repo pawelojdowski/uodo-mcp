@@ -1,57 +1,60 @@
 import { createServer as createHttpServer, IncomingMessage, ServerResponse } from "http";
-import { randomUUID } from "crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "./server";
 import { VERSION } from "./version";
 
 const PORT = Number(process.env.PORT ?? 3000);
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const MAX_SESSIONS = 100;
-
-const sessions = new Map<string, StreamableHTTPServerTransport>();
 
 function setCors(res: ServerResponse): void {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, mcp-session-id");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, mcp-session-id, mcp-protocol-version, Authorization");
 }
 
 async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-  if (sessionId) {
-    if (!UUID_RE.test(sessionId) || !sessions.has(sessionId)) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Session not found" }));
-      return;
-    }
-    await sessions.get(sessionId)!.handleRequest(req, res);
-    return;
-  }
-
+  // Narzędzia tego serwera są tylko do czytania i niezależne od siebie, więc nie ma
+  // czego trzymać między requestami. Tryb stateless usuwa wyciek sesji: klienci,
+  // którzy rozłączają się bez DELETE, zapychali mapę sesji do limitu i serwer
+  // odpowiadał 503 aż do restartu.
   if (req.method !== "POST") {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "New sessions must be initialized via POST" }));
+    res.writeHead(405, { "Content-Type": "application/json", "Allow": "POST, OPTIONS" });
+    res.end(JSON.stringify({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed." },
+      id: null,
+    }));
     return;
   }
 
-  if (sessions.size >= MAX_SESSIONS) {
-    res.writeHead(503, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Too many active sessions" }));
-    return;
-  }
-
-  const newSessionId = randomUUID();
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => newSessionId,
-  });
-
-  sessions.set(newSessionId, transport);
-  transport.onclose = () => sessions.delete(newSessionId);
-
+  // Każdy request stateless potrzebuje własnej pary server + transport.
   const mcpServer = createMcpServer(); // no outputDir — HTTP mode has no local file system
-  await mcpServer.connect(transport);
-  await transport.handleRequest(req, res);
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+
+  let closed = false;
+  const cleanup = (): void => {
+    if (closed) return;
+    closed = true;
+    void (async () => {
+      try {
+        await transport.close();
+      } finally {
+        await mcpServer.close();
+      }
+    })().catch((err: unknown) => {
+      process.stderr.write(`[UODO-MCP] Błąd zwalniania zasobów: ${err}\n`);
+    });
+  };
+
+  // Zasoby żyją do zakończenia (lub zerwania) odpowiedzi HTTP.
+  res.once("close", cleanup);
+
+  try {
+    await mcpServer.connect(transport);
+    await transport.handleRequest(req, res);
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
 }
 
 const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -72,7 +75,7 @@ const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResp
         status: "ok",
         server: "UODO-MCP",
         version: VERSION,
-        sessions: sessions.size,
+        sessionMode: "stateless",
       }));
       return;
     }
